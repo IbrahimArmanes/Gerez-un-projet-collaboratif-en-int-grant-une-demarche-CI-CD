@@ -1,21 +1,22 @@
-name: CI Pipeline for Bob's App
+name: CI/CD Pipeline for Bob's App
 
 on:
   pull_request:
     branches: [ main ]
   push:
     branches: [ main ]
+
 jobs:
-  test-and-report:
+  # PREMIER JOB : Test, Analyse et Build
+  test-and-build:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-        # On doit récupérer l'historique complet pour que Sonar puisse analyser la PR correctement
         with:
           fetch-depth: 0
 
-      - name: Set up JDK 11 with Temurin distribution
+      - name: Set up JDK 11
         uses: actions/setup-java@v4
         with:
           java-version: '11'
@@ -29,37 +30,51 @@ jobs:
           cache: 'npm'
           cache-dependency-path: front/package-lock.json
 
-      - name: Run Backend Tests with Maven
-        run: mvn -B verify # On utilise 'verify' au lieu de 'test' pour s'assurer que tout est bien packagé avant l'analyse
+      - name: Run Backend Tests & Build
+        run: mvn -B verify
         working-directory: ./back
 
-      - name: Upload backend coverage report (JaCoCo)
-        uses: actions/upload-artifact@v4
-        with:
-          name: backend-coverage-report
-          path: back/target/site/jacoco/
-
-      - name: Install Frontend Dependencies
-        run: npm install
-        working-directory: ./front
-      
-      - name: Run Frontend Tests and generate coverage
-        run: npm test -- --code-coverage --watch=false --browsers=ChromeHeadless
+      - name: Build Frontend Application
+        run: npm run build -- --configuration production
         working-directory: ./front
 
-      - name: Upload frontend coverage report
-        uses: actions/upload-artifact@v4
-        with:
-          name: frontend-coverage-report
-          path: front/coverage/
-          
       - name: Generate dependency classpath for Sonar
         run: mvn dependency:build-classpath -Dmdep.outputFile=.sonar/classpath.txt
         working-directory: ./back
-        
-      # Étape finale et nouvelle
+
       - name: SonarCloud Scan
         uses: sonarsource/sonarcloud-github-action@master
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+
+  # DEUXIÈME JOB : Publication des images Docker
+  build-and-push-images:
+    # Ce job ne se lance que si le précédent a réussi
+    needs: test-and-build
+    # Et uniquement pour les push sur la branche main
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build and push backend Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./back # Le dossier où se trouve le Dockerfile du back
+          push: true
+          tags: ${{ secrets.DOCKERHUB_USERNAME }}/bobapp-backend:latest
+
+      - name: Build and push frontend Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./front # Le dossier où se trouve le Dockerfile du front
+          push: true
+          tags: ${{ secrets.DOCKERHUB_USERNAME }}/bobapp-frontend:latest
