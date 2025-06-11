@@ -3,7 +3,8 @@ name: CI Pipeline for Bob's App
 on:
   pull_request:
     branches: [ main ]
-
+  push:
+    branches: [ main ]
 jobs:
   test-and-report:
     runs-on: ubuntu-latest
