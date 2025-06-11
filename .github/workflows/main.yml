@@ -22,7 +22,7 @@ jobs:
           java-version: '11'
           distribution: 'temurin'
           cache: 'maven'
-
+          
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
@@ -30,34 +30,66 @@ jobs:
           cache: 'npm'
           cache-dependency-path: front/package-lock.json
 
+      # --- Séquence Backend ---
       - name: Run Backend Tests & Build
         run: mvn -B verify
         working-directory: ./back
 
+      # --- Séquence Frontend ---
+      - name: Install Frontend Dependencies
+        run: npm install
+        working-directory: ./front
+      - name: Run Frontend Tests
+        run: npm test -- --code-coverage --watch=false --browsers=ChromeHeadless
+        working-directory: ./front
       - name: Build Frontend Application
         run: npm run build -- --configuration production
         working-directory: ./front
-
+      
+      # --- Séquence Analyse ---
       - name: Generate dependency classpath for Sonar
         run: mvn dependency:build-classpath -Dmdep.outputFile=.sonar/classpath.txt
         working-directory: ./back
-
       - name: SonarCloud Scan
         uses: sonarsource/sonarcloud-github-action@master
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          
+      # --- Uploader les artefacts pour le job suivant ---
+      - name: Upload Backend Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-jar
+          path: back/target/*.jar
+
+      - name: Upload Frontend Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-dist
+          path: front/dist/
 
   # DEUXIÈME JOB : Publication des images Docker
   build-and-push-images:
-    # Ce job ne se lance que si le précédent a réussi
     needs: test-and-build
-    # Et uniquement pour les push sur la branche main
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+
+      # --- Télécharger les artefacts du job précédent ---
+      - name: Download Backend Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: backend-jar
+          path: back/target/
+      
+      - name: Download Frontend Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: frontend-dist
+          path: front/dist/
 
       - name: Log in to Docker Hub
         uses: docker/login-action@v3
@@ -65,16 +97,21 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
+      # --- AMÉLIORATION : Ajout d'un tag unique ---
       - name: Build and push backend Docker image
         uses: docker/build-push-action@v5
         with:
-          context: ./back # Le dossier où se trouve le Dockerfile du back
+          context: ./back
           push: true
-          tags: ${{ secrets.DOCKERHUB_USERNAME }}/bobapp-backend:latest
+          tags: |
+            ${{ secrets.DOCKERHUB_USERNAME }}/bobapp-backend:latest
+            ${{ secrets.DOCKERHUB_USERNAME }}/bobapp-backend:${{ github.sha }}
 
       - name: Build and push frontend Docker image
         uses: docker/build-push-action@v5
         with:
-          context: ./front # Le dossier où se trouve le Dockerfile du front
+          context: ./front
           push: true
-          tags: ${{ secrets.DOCKERHUB_USERNAME }}/bobapp-frontend:latest
+          tags: |
+            ${{ secrets.DOCKERHUB_USERNAME }}/bobapp-frontend:latest
+            ${{ secrets.DOCKERHUB_USERNAME }}/bobapp-frontend:${{ github.sha }}
